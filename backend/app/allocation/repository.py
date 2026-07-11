@@ -11,36 +11,37 @@ from backend.app.allocation.models import Allocation
 from backend.app.models.mentor import Mentor
 from backend.app.models.student import Student
 
-RISK_ORDER: dict[str, int] = {
-    "Coral": 0,
-    "Amber": 1,
-    "Green": 2,
-    "Insufficient": 3,
-}
+def _student_score_sort_key(student: Student) -> tuple[float, int]:
+    """Sort key: highest ``success_score`` first, ``id`` breaks ties.
 
+    Unscored students (``success_score`` None) sink to the bottom so they are
+    allocated last rather than jumping the queue.
 
-def _student_risk_sort_key(student: Student) -> tuple[int, int]:
-    """Sort key for risk-prioritized student ordering."""
-    return (RISK_ORDER.get(student.risk_status, 99), student.id)
+    This is the SAME rule the engine uses (engine._sort_key) so the "pending"
+    view and the allocation run agree on who is allocated first.
+    """
+    return (-(student.success_score or 0), student.id)
 
 
 def get_unallocated_students(db: Session) -> list[Student]:
-    """Return students with no mentor assigned, ordered by risk priority.
+    """Return students with no mentor assigned, ordered by score priority.
 
-    Ordering is Coral → Amber → Green → Insufficient, then by ``id``.
+    Ordering is highest ``success_score`` → lowest, then by ``id``. This mirrors
+    the allocation engine's ranking so the HOD "pending" view and the engine
+    agree on who gets allocated first.
 
     Args:
         db: Active SQLAlchemy session.
 
     Returns:
-        Unallocated ``Student`` rows sorted by ``risk_status`` priority.
+        Unallocated ``Student`` rows sorted by ``success_score`` priority.
     """
     students = (
         db.query(Student)
         .filter(Student.mentor_id.is_(None))
         .all()
     )
-    return sorted(students, key=_student_risk_sort_key)
+    return sorted(students, key=_student_score_sort_key)
 
 
 def get_mentors_by_department(db: Session) -> dict[str, list[Mentor]]:

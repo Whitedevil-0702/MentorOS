@@ -7,5 +7,6 @@ export * from "./students";
 export * from "./mentors";
 export * from "./hod";
 export * from "./admin";
+export * from "./allocation";
 export * from "./companion";
 export * from "./session";

@@ -33,7 +33,21 @@ When triggering automatic cohort allocation, the system distributes unassigned s
 
 ---
 
-## 4. Rule: Prioritization by Risk
-To optimize student success rates, HOD reviews must prioritize allocation actions:
-- Students flagged as **Coral** (Critical) or **Amber** (At-risk) who are unassigned must be matched first.
-- The system should flag and highlight unassigned students in risk categories on the HOD dashboard roster workspace.
+## 4. Rule: Prioritization by Success Score
+Allocation priority is driven by each student's **Student Success Score** — the
+weighted blend `0.35·Attendance + 0.35·Academic + 0.15·Engagement + 0.15·Placement`
+computed by the scoring engine (`backend/app/scoring/engine.py`,
+`COMPONENT_WEIGHTS`). The weights live in one place and are shared with the
+allocation engine so scoring and allocation never drift apart.
+
+- Students are ranked **highest success_score first**; ties are broken by
+  ascending `student.id` for deterministic output. Unscored students
+  (`success_score` is `NULL`) are treated as `0` and sink to the bottom of the queue.
+- The highest-scoring student in a department is assigned first and gets first
+  pick of the **mentor carrying the lightest current load**, so strong students
+  are paired with mentors who have the most capacity to engage them.
+- Within a department, a per-mentor min-heap keeps loads balanced to **±1
+  mentee** — no mentor is overloaded while a colleague sits idle.
+- If a department's mentors are all at `max_mentees`, the remaining students are
+  **not silently dropped**: the run response returns `skipped_students` (their
+  ids) and an audit entry is written so the HOD can raise capacity or add mentors.

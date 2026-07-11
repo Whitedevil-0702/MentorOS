@@ -25,6 +25,15 @@ from backend.app.models.academic import (
 
 DEFAULT_PERIOD = settings.SCORING_PERIOD
 
+# Single source of truth for the four component weights. The allocation engine
+# imports this so "how we score" and "how we rank for allocation" stay in sync.
+COMPONENT_WEIGHTS = {
+    "attendance": 0.35,
+    "academic": 0.35,
+    "engagement": 0.15,
+    "placement": 0.15,
+}
+
 # Mirror the new lowercase risk taxonomy onto the existing capitalised
 # `students.risk_status` so current NAAC/compliance endpoints don't regress.
 RISK_STATUS_MIRROR = {
@@ -148,7 +157,11 @@ class ScoringEngine:
             eng_w = eng if eng is not None else 0
             place_w = place if place is not None else 0
             total_score = round(
-                (0.35 * att) + (0.35 * acad) + (0.15 * eng_w) + (0.15 * place_w), 2
+                (COMPONENT_WEIGHTS["attendance"] * att)
+                + (COMPONENT_WEIGHTS["academic"] * acad)
+                + (COMPONENT_WEIGHTS["engagement"] * eng_w)
+                + (COMPONENT_WEIGHTS["placement"] * place_w),
+                2,
             )
             if total_score >= 70:
                 risk_category = "green"

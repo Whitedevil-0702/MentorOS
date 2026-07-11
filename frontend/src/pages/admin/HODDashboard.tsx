@@ -5,6 +5,7 @@ import { useAsync } from "@/lib/useAsync";
 import { Button, EmptyState, GlassCard, LoadingState } from "@/components/primitives";
 import { SectionHeading } from "@/components/SectionHeading";
 import { StatTile } from "@/components/StatTile";
+import { AllocationManager } from "@/components/allocation/AllocationManager";
 import { RiskHeatmap } from "@/features/hod/RiskHeatmap";
 import { MentorWorkloadChart } from "@/features/hod/MentorWorkloadChart";
 import { SemesterTrendChart } from "@/features/hod/SemesterTrendChart";
@@ -81,6 +82,8 @@ export default function HODDashboard() {
           ))}
         </div>
       </GlassCard>
+
+      <AllocationManager />
 
       <div className="grid gap-5 lg:grid-cols-2">
         {/* Heatmap */}

@@ -16,6 +16,7 @@ class AllocationRunResponse(BaseModel):
 
     allocated: int
     skipped: int
+    skipped_students: list[int] = []
     by_department: dict[str, DepartmentRunStats]
 
 
@@ -78,3 +79,4 @@ class PendingStudent(BaseModel):
     full_name: str
     department: str
     risk_status: str
+    success_score: float | None = None

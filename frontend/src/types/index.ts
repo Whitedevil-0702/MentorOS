@@ -174,3 +174,59 @@ export interface PlatformUser {
   status: "active" | "invited" | "suspended";
   last_active: string;
 }
+
+export interface AllocationDepartmentRunStats {
+  allocated: number;
+  skipped: number;
+}
+
+export interface AllocationRunResponse {
+  allocated: number;
+  skipped: number;
+  skipped_students: number[];
+  by_department: Record<string, AllocationDepartmentRunStats>;
+}
+
+export interface AllocationResetResponse {
+  cleared: number;
+}
+
+export interface AllocationDepartmentStatistics {
+  total_students: number;
+  total_mentors: number;
+  allocated: number;
+  pending: number;
+}
+
+export interface AllocationStatistics {
+  total_students: number;
+  total_mentors: number;
+  allocated: number;
+  pending: number;
+  by_department: Record<string, AllocationDepartmentStatistics>;
+}
+
+export interface AllocationMenteeSummary {
+  id: number;
+  usn: string;
+  full_name: string;
+  risk_status: string;
+}
+
+export interface AllocationMentorWorkload {
+  mentor_id: number;
+  mentor_name: string;
+  department: string;
+  current: number;
+  max: number;
+  mentees: AllocationMenteeSummary[];
+}
+
+export interface AllocationPendingStudent {
+  id: number;
+  usn: string;
+  full_name: string;
+  department: string;
+  risk_status: string;
+  success_score: number | null;
+}
