@@ -21,10 +21,10 @@ def validate_has_pending_students(db: Session) -> None:
     Raises:
         NoPendingStudentsError: When every student already has a mentor assigned.
     """
-    has_pending = (
+    has_unallocated = (
         db.query(Student.id).filter(Student.mentor_id.is_(None)).first()
     )
-    if has_pending is None:
+    if has_unallocated is None:
         raise NoPendingStudentsError()
 
 
@@ -38,7 +38,8 @@ def validate_mentor_capacity(mentor: Mentor, current_count: int) -> None:
     Raises:
         NoMentorCapacityError: When ``current_count`` is at or above ``max_mentees``.
     """
-    if current_count >= mentor.max_mentees:
+    is_at_capacity = current_count >= mentor.max_mentees
+    if is_at_capacity:
         raise NoMentorCapacityError(
             f"Mentor {mentor.id} is at maximum capacity ({mentor.max_mentees})"
         )
@@ -54,7 +55,8 @@ def validate_same_department(student: Student, mentor: Mentor) -> None:
     Raises:
         DepartmentMismatchError: When ``student.department`` != ``mentor.department``.
     """
-    if student.department != mentor.department:
+    departments_match = student.department == mentor.department
+    if not departments_match:
         raise DepartmentMismatchError(
             f"Department mismatch: student ({student.department}) "
             f"vs mentor ({mentor.department})"

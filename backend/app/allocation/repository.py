@@ -11,17 +11,6 @@ from backend.app.allocation.models import Allocation
 from backend.app.models.mentor import Mentor
 from backend.app.models.student import Student
 
-def _student_score_sort_key(student: Student) -> tuple[float, int]:
-    """Sort key: highest ``success_score`` first, ``id`` breaks ties.
-
-    Unscored students (``success_score`` None) sink to the bottom so they are
-    allocated last rather than jumping the queue.
-
-    This is the SAME rule the engine uses (engine._sort_key) so the "pending"
-    view and the allocation run agree on who is allocated first.
-    """
-    return (-(student.success_score or 0), student.id)
-
 
 def get_unallocated_students(db: Session) -> list[Student]:
     """Return students with no mentor assigned, ordered by score priority.
@@ -36,12 +25,12 @@ def get_unallocated_students(db: Session) -> list[Student]:
     Returns:
         Unallocated ``Student`` rows sorted by ``success_score`` priority.
     """
-    students = (
+    return (
         db.query(Student)
         .filter(Student.mentor_id.is_(None))
+        .order_by(Student.success_score.desc().nullslast(), Student.id)
         .all()
     )
-    return sorted(students, key=_student_score_sort_key)
 
 
 def get_mentors_by_department(db: Session) -> dict[str, list[Mentor]]:
@@ -57,6 +46,27 @@ def get_mentors_by_department(db: Session) -> dict[str, list[Mentor]]:
     for mentor in db.query(Mentor).all():
         mentors_by_department.setdefault(mentor.department, []).append(mentor)
     return mentors_by_department
+
+
+def _merge_mentor_counts(
+    by_department: dict[str, dict[str, int]],
+    mentor_rows: list[tuple[str, int]],
+) -> None:
+    """Fill in ``total_mentors`` for each department from query rows.
+
+    Departments with students but no mentors get a zero count.
+    Departments with mentors have their count added to the existing entry.
+    """
+    for dept, total_mentors in mentor_rows:
+        if dept not in by_department:
+            by_department[dept] = {
+                "total_students": 0,
+                "total_mentors": total_mentors,
+                "allocated": 0,
+                "pending": 0,
+            }
+        else:
+            by_department[dept]["total_mentors"] = total_mentors
 
 
 def get_workload_map(db: Session) -> dict[int, int]:
@@ -101,37 +111,35 @@ def commit_allocation_plan(
     Raises:
         Exception: Re-raised after ``db.rollback()`` on any failure.
     """
+    if not plan:
+        return 0
+
     try:
         now = datetime.now(timezone.utc)
-        for student_id, mentor_id in plan:
-            student = (
-                db.query(Student)
-                .filter(Student.id == student_id)
-                .first()
-            )
-            if student is not None:
-                student.mentor_id = mentor_id
+        student_ids = [s for s, _ in plan]
+        mentor_by_student = {s: m for s, m in plan}
 
-            existing_allocation = (
-                db.query(Allocation)
-                .filter(Allocation.student_id == student_id)
-                .first()
-            )
-            if existing_allocation is not None:
-                existing_allocation.mentor_id = mentor_id
-                existing_allocation.allocated_at = now
-                existing_allocation.allocated_by = triggered_by_user_id
-                existing_allocation.method = method
-            else:
-                db.add(
-                    Allocation(
-                        student_id=student_id,
-                        mentor_id=mentor_id,
-                        allocated_at=now,
-                        allocated_by=triggered_by_user_id,
-                        method=method,
-                    )
-                )
+        # Fetch students once and update
+        students = (
+            db.query(Student)
+            .filter(Student.id.in_(student_ids))
+            .all()
+        )
+        for student in students:
+            student.mentor_id = mentor_by_student[student.id]
+
+        # Bulk insert Allocation rows
+        allocations_data = [
+            {
+                "student_id": s,
+                "mentor_id": m,
+                "allocated_at": now,
+                "allocated_by": triggered_by_user_id,
+                "method": method,
+            }
+            for s, m in plan
+        ]
+        db.bulk_insert_mappings(Allocation, allocations_data)
 
         db.commit()
         return len(plan)
@@ -189,6 +197,7 @@ def get_allocation_stats(db: Session) -> dict[str, Any]:
     """Return raw allocation counts for the statistics service.
 
     Uses ``Student.mentor_id`` as the source of truth for allocated vs pending.
+    Computed in SQL via aggregation — no full-table scans in Python.
 
     Args:
         db: Active SQLAlchemy session.
@@ -196,38 +205,47 @@ def get_allocation_stats(db: Session) -> dict[str, Any]:
     Returns:
         Dict with top-level totals and a per-department breakdown.
     """
-    students = db.query(Student).all()
-    mentors = db.query(Mentor).all()
+    total_students = db.query(func.count(Student.id)).scalar()
+    total_mentors = db.query(func.count(Mentor.id)).scalar()
+    allocated = (
+        db.query(func.count(Student.id))
+        .filter(Student.mentor_id.isnot(None))
+        .scalar()
+    )
+    pending = total_students - allocated
+
+    # Per-department breakdown from SQL aggregation
+    dept_rows = (
+        db.query(
+            Student.department,
+            func.count(Student.id).label("total_students"),
+            func.count(Student.mentor_id).label("allocated"),
+        )
+        .group_by(Student.department)
+        .all()
+    )
+
+    mentor_rows = (
+        db.query(Mentor.department, func.count(Mentor.id))
+        .group_by(Mentor.department)
+        .all()
+    )
 
     by_department: dict[str, dict[str, int]] = {}
+    for dept, total_dept_students, dept_allocated in dept_rows:
+        by_department[dept] = {
+            "total_students": total_dept_students,
+            "total_mentors": 0,
+            "allocated": dept_allocated,
+            "pending": total_dept_students - dept_allocated,
+        }
 
-    def _dept_bucket(department: str) -> dict[str, int]:
-        if department not in by_department:
-            by_department[department] = {
-                "total_students": 0,
-                "total_mentors": 0,
-                "allocated": 0,
-                "pending": 0,
-            }
-        return by_department[department]
-
-    for student in students:
-        bucket = _dept_bucket(student.department)
-        bucket["total_students"] += 1
-        if student.mentor_id is not None:
-            bucket["allocated"] += 1
-        else:
-            bucket["pending"] += 1
-
-    for mentor in mentors:
-        _dept_bucket(mentor.department)["total_mentors"] += 1
-
-    allocated = sum(1 for student in students if student.mentor_id is not None)
+    _merge_mentor_counts(by_department, mentor_rows)
 
     return {
-        "total_students": len(students),
-        "total_mentors": len(mentors),
+        "total_students": total_students,
+        "total_mentors": total_mentors,
         "allocated": allocated,
-        "pending": len(students) - allocated,
+        "pending": pending,
         "by_department": by_department,
     }

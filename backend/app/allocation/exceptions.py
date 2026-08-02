@@ -3,7 +3,11 @@ from __future__ import annotations
 
 
 class AllocationModuleError(Exception):
-    """Base exception for allocation module errors."""
+    """Base exception for allocation module errors.
+
+    Subclasses define a ``status_code`` that the router maps to the
+    HTTP response status.
+    """
 
     status_code: int = 400
 

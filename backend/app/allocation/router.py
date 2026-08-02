@@ -26,9 +26,9 @@ from backend.app.models.user import User
 router = APIRouter()
 
 
-def _allocation_http_error(exc: AllocationModuleError) -> HTTPException:
-    """Convert a module exception into an HTTP error response."""
-    return HTTPException(status_code=exc.status_code, detail=exc.message)
+def _raise_allocation_error(exc: AllocationModuleError) -> HTTPException:
+    """Raise an HTTPException mapped from an allocation exception."""
+    raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.post("/run", response_model=AllocationRunResponse)
@@ -40,7 +40,7 @@ def run_allocation_endpoint(
     try:
         return run_allocation(db, current_user)
     except AllocationModuleError as exc:
-        raise _allocation_http_error(exc) from exc
+        raise _raise_allocation_error(exc)
 
 
 @router.post("/reset", response_model=AllocationResetResponse)
@@ -52,7 +52,7 @@ def reset_allocation_endpoint(
     try:
         return reset_allocation(db, current_user)
     except AllocationModuleError as exc:
-        raise _allocation_http_error(exc) from exc
+        raise _raise_allocation_error(exc)
 
 
 @router.get("/statistics", response_model=AllocationStatistics)
@@ -64,7 +64,7 @@ def get_statistics_endpoint(
     try:
         return get_statistics(db)
     except AllocationModuleError as exc:
-        raise _allocation_http_error(exc) from exc
+        raise _raise_allocation_error(exc)
 
 
 @router.get("/workload", response_model=list[MentorWorkload])
@@ -76,7 +76,7 @@ def get_workload_endpoint(
     try:
         return get_workload(db)
     except AllocationModuleError as exc:
-        raise _allocation_http_error(exc) from exc
+        raise _raise_allocation_error(exc)
 
 
 @router.get("/pending", response_model=list[PendingStudent])
@@ -88,4 +88,4 @@ def get_pending_endpoint(
     try:
         return get_pending(db)
     except AllocationModuleError as exc:
-        raise _allocation_http_error(exc) from exc
+        raise _raise_allocation_error(exc)

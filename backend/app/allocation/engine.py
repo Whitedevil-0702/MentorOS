@@ -1,9 +1,9 @@
 """
 Student → mentor allocation engine (score-prioritised, workload-balanced).
 
-The engine ONLY consumes the ``success_score`` already produced by the
-Scoring Engine. It never calculates, modifies, or interprets that score —
-it treats it as an opaque number used purely to rank students.
+Consumes only the ``success_score`` already produced by the Scoring Engine.
+It never calculates, modifies, or interprets that score — it treats it as an
+opaque number used purely to rank students.
 
 Algorithm (per department):
   1. Sort students by success_score, highest first.
@@ -20,15 +20,40 @@ import heapq
 from typing import Any
 
 
-def _sort_key(student: dict[str, Any]) -> tuple[float, int]:
-    """Rank students highest-score first; ties broken by id; unscored → 0.
+def _build_mentor_heap(
+    mentors_by_dept: dict[str, dict[int, int]],
+    running_workload: dict[int, int],
+) -> dict[str, list[tuple[int, int]]]:
+    """Build a min-heap of (load, mentor_id) for each department.
 
-    This is the ONLY sort rule in the module. repository.load_unallocated
-    applies the same rule when building the "pending" view, so the two
-    never disagree.
+    Mentors already at capacity are excluded from the heap.
     """
-    score = student.get("success_score") or 0
-    return (-float(score), student["id"])
+    mentor_heaps: dict[str, list[tuple[int, int]]] = {}
+    for dept, max_mentees in mentors_by_dept.items():
+        heap: list[tuple[int, int]] = []
+        for mentor_id, max_m in max_mentees.items():
+            current_load = running_workload.get(mentor_id, 0)
+            if current_load < max_m:
+                heapq.heappush(heap, (current_load, mentor_id))
+        mentor_heaps[dept] = heap
+    return mentor_heaps
+
+
+def _assign_student(
+    student_id: int,
+    mentor_id: int,
+    plan: list[tuple[int, int]],
+    load: int,
+    max_mentees: int,
+    running_workload: dict[int, int],
+    mentor_heap: list[tuple[int, int]],
+) -> None:
+    """Assign a student to a mentor and update the heap if capacity remains."""
+    plan.append((student_id, mentor_id))
+    new_load = load + 1
+    running_workload[mentor_id] = new_load
+    if new_load < max_mentees:
+        heapq.heappush(mentor_heap, (new_load, mentor_id))
 
 
 def allocate(
@@ -50,56 +75,63 @@ def allocate(
         ``stats`` with ``allocated``, ``skipped``, ``skipped_students`` (the ids
         that could not be placed) and a per-department breakdown.
     """
+    if not students_by_dept or not mentors_by_dept:
+        return {"plan": [], "stats": {"allocated": 0, "skipped": 0, "skipped_students": [], "by_dept": {}}}
+
     plan: list[tuple[int, int]] = []
     total_allocated = 0
     total_skipped = 0
-    skipped_students: list[int] = []
-    by_dept: dict[str, dict[str, int]] = {}
+    skipped_student_ids: list[int] = []
+    department_stats: dict[str, dict[str, int]] = {}
     running_workload = dict(workload_map)
 
-    for dept, students in students_by_dept.items():
-        dept_allocated = 0
-        dept_skipped = 0
-        dept_skipped_ids: list[int] = []
-        mentors = mentors_by_dept.get(dept, [])
+    # Build max_mentees lookup once per department
+    max_mentees_by_dept: dict[str, dict[int, int]] = {
+        dept: {mentor["id"]: mentor["max_mentees"] for mentor in mentors}
+        for dept, mentors in mentors_by_dept.items()
+    }
 
-        # Min-heap of mentors ordered by (current_load, mentor_id, max_mentees).
-        # mentor_id is unique, so it alone breaks ties — no extra counter needed.
-        # Popping returns the mentor carrying the lightest current load.
-        heap: list[tuple[int, int, int]] = []
-        for mentor in mentors:
-            mentor_id = mentor["id"]
-            current = running_workload.get(mentor_id, 0)
-            if current < mentor["max_mentees"]:
-                heapq.heappush(heap, (current, mentor_id, mentor["max_mentees"]))
+    mentor_heaps = _build_mentor_heap(max_mentees_by_dept, running_workload)
+
+    for dept, students in students_by_dept.items():
+        allocated_count = 0
+        skipped_count = 0
+        skipped_ids: list[int] = []
+        max_mentees = max_mentees_by_dept.get(dept, {})
+        mentor_heap = mentor_heaps.get(dept, [])
 
         # Highest success_score first → first pick of the lightest mentor.
-        for student in sorted(students, key=_sort_key):
-            if not heap:
-                dept_skipped += 1
-                dept_skipped_ids.append(student["id"])
+        for student in sorted(
+            students, key=lambda s: (-(s.get("success_score") or 0), s["id"])
+        ):
+            if not mentor_heap:
+                skipped_count += 1
+                skipped_ids.append(student["id"])
                 continue
 
-            load, mentor_id, max_mentees = heapq.heappop(heap)
-            plan.append((student["id"], mentor_id))
-            dept_allocated += 1
+            load, mentor_id = heapq.heappop(mentor_heap)
+            _assign_student(
+                student_id=student["id"],
+                mentor_id=mentor_id,
+                plan=plan,
+                load=load,
+                max_mentees=max_mentees[mentor_id],
+                running_workload=running_workload,
+                mentor_heap=mentor_heap,
+            )
+            allocated_count += 1
 
-            new_load = load + 1
-            running_workload[mentor_id] = new_load
-            if new_load < max_mentees:
-                heapq.heappush(heap, (new_load, mentor_id, max_mentees))
-
-        by_dept[dept] = {"allocated": dept_allocated, "skipped": dept_skipped}
-        total_allocated += dept_allocated
-        total_skipped += dept_skipped
-        skipped_students.extend(dept_skipped_ids)
+        department_stats[dept] = {"allocated": allocated_count, "skipped": skipped_count}
+        total_allocated += allocated_count
+        total_skipped += skipped_count
+        skipped_student_ids.extend(skipped_ids)
 
     return {
         "plan": plan,
         "stats": {
             "allocated": total_allocated,
             "skipped": total_skipped,
-            "skipped_students": skipped_students,
-            "by_dept": by_dept,
+            "skipped_students": skipped_student_ids,
+            "by_dept": department_stats,
         },
     }

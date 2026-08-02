@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from backend.app.allocation import engine, repository, statistics, validators
+from backend.app.allocation import engine, repository, statistics
 from backend.app.allocation.schemas import (
     AllocationResetResponse,
     AllocationRunResponse,
@@ -33,54 +33,10 @@ from backend.app.models.student import Student
 from backend.app.models.user import User
 
 
-def _students_by_department(students: list[Student]) -> dict[str, list[dict[str, Any]]]:
-    """Group unallocated students into engine-ready dicts keyed by department.
-
-    Each dict carries the ``success_score`` the engine ranks on — already
-    computed and stored by the Scoring Engine. Risk status is intentionally
-    excluded: it is display-only and must not affect allocation.
-    """
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for student in students:
-        grouped.setdefault(student.department, []).append(
-            {
-                "id": student.id,
-                "success_score": student.success_score,
-            }
-        )
-    return grouped
-
-
-def _mentors_for_engine(
-    mentors_by_department: dict[str, list[Mentor]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Convert mentor ORM objects into engine-ready dicts keyed by department."""
-    return {
-        department: [
-            {"id": mentor.id, "max_mentees": mentor.max_mentees}
-            for mentor in mentors
-        ]
-        for department, mentors in mentors_by_department.items()
-    }
-
-
-def _pending_from_student(student: Student) -> PendingStudent:
-    """Map a ``Student`` ORM row to a ``PendingStudent`` response schema."""
-    user = getattr(student, "user", None)
-    return PendingStudent(
-        id=student.id,
-        usn=student.usn,
-        full_name=user.full_name if user is not None else "",
-        department=student.department,
-        risk_status=student.risk_status,
-        success_score=student.success_score,
-    )
-
-
 def run_allocation(db: Session, current_user: User) -> AllocationRunResponse:
     """Run the auto-allocation engine and persist the resulting plan.
 
-    Flow: validators → repository (load) → engine → repository (commit) → audit.
+    Flow: validate → load data → allocate → persist → audit.
 
     Args:
         db: Active SQLAlchemy session.
@@ -88,37 +44,31 @@ def run_allocation(db: Session, current_user: User) -> AllocationRunResponse:
 
     Returns:
         Summary of allocated and skipped students per department.
+
+    Raises:
+        NoPendingStudentsError: When every student already has a mentor assigned.
     """
-    validators.validate_has_pending_students(db)
+    from backend.app.allocation.validators import validate_has_pending_students
+    validate_has_pending_students(db)
 
     unallocated_students = repository.get_unallocated_students(db)
     mentors_by_department = repository.get_mentors_by_department(db)
     workload_map = repository.get_workload_map(db)
 
-    result = engine.allocate(
-        _students_by_department(unallocated_students),
-        _mentors_for_engine(mentors_by_department),
-        workload_map,
-    )
+    students_by_dept = _group_students_by_department(unallocated_students)
+    mentors_for_engine = {
+        dept: [{"id": m.id, "max_mentees": m.max_mentees} for m in mentors]
+        for dept, mentors in mentors_by_department.items()
+    }
+
+    result = engine.allocate(students_by_dept, mentors_for_engine, workload_map)
     plan = result["plan"]
 
     if plan:
         repository.commit_allocation_plan(db, plan, current_user.id)
 
     run_stats = result["stats"]
-    write_audit(
-        db=db,
-        user_id=current_user.id,
-        action="run_allocation",
-        entity_type="allocation",
-        entity_id=None,
-        details={
-            "allocated": run_stats["allocated"],
-            "skipped": run_stats["skipped"],
-            "skipped_students": run_stats.get("skipped_students", []),
-            "method": "auto",
-        },
-    )
+    _record_allocation_audit(db, current_user.id, run_stats)
 
     by_department = {
         department: DepartmentRunStats(**dept_stats)
@@ -129,6 +79,39 @@ def run_allocation(db: Session, current_user: User) -> AllocationRunResponse:
         skipped=run_stats["skipped"],
         skipped_students=run_stats.get("skipped_students", []),
         by_department=by_department,
+    )
+
+
+def _group_students_by_department(
+    students: list[Student],
+) -> dict[str, list[dict[str, Any]]]:
+    """Group unallocated students by department for the allocation engine."""
+    students_by_dept: dict[str, list[dict[str, Any]]] = {}
+    for student in students:
+        students_by_dept.setdefault(student.department, []).append(
+            {"id": student.id, "success_score": student.success_score}
+        )
+    return students_by_dept
+
+
+def _record_allocation_audit(
+    db: Session,
+    user_id: int,
+    run_stats: dict[str, Any],
+) -> None:
+    """Write an audit entry for a completed allocation run."""
+    write_audit(
+        db=db,
+        user_id=user_id,
+        action="run_allocation",
+        entity_type="allocation",
+        entity_id=None,
+        details={
+            "allocated": run_stats["allocated"],
+            "skipped": run_stats["skipped"],
+            "skipped_students": run_stats.get("skipped_students", []),
+            "method": "auto",
+        },
     )
 
 
@@ -187,5 +170,21 @@ def get_pending(db: Session) -> list[PendingStudent]:
     Returns:
         Unallocated students ordered by success_score.
     """
-    students = repository.get_unallocated_students(db)
-    return [_pending_from_student(student) for student in students]
+    students = (
+        db.query(Student)
+        .options(joinedload(Student.user))
+        .filter(Student.mentor_id.is_(None))
+        .order_by(Student.success_score.desc().nullslast(), Student.id)
+        .all()
+    )
+    return [
+        PendingStudent(
+            id=s.id,
+            usn=s.usn,
+            full_name=s.user.full_name if s.user else "",
+            department=s.department,
+            risk_status=s.risk_status,
+            success_score=s.success_score,
+        )
+        for s in students
+    ]

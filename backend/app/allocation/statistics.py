@@ -14,12 +14,6 @@ from backend.app.models.mentor import Mentor
 from backend.app.models.student import Student
 
 
-def _student_full_name(student: Student) -> str:
-    """Return the display name for a student from the linked user record."""
-    user = getattr(student, "user", None)
-    return user.full_name if user is not None else ""
-
-
 def build_statistics(db: Session) -> AllocationStatistics:
     """Build aggregate allocation statistics for the statistics endpoint.
 
@@ -61,26 +55,27 @@ def build_workload(db: Session) -> list[MentorWorkload]:
         .all()
     )
 
-    workloads: list[MentorWorkload] = []
-    for mentor in mentors:
-        mentees = [
-            MenteeSummary(
-                id=student.id,
-                usn=student.usn,
-                full_name=_student_full_name(student),
-                risk_status=student.risk_status,
-            )
-            for student in mentor.students
-        ]
-        mentor_user = getattr(mentor, "user", None)
-        workloads.append(
-            MentorWorkload(
-                mentor_id=mentor.id,
-                mentor_name=mentor_user.full_name if mentor_user is not None else "",
-                department=mentor.department,
-                current=len(mentees),
-                max=mentor.max_mentees,
-                mentees=mentees,
-            )
+    return [_build_mentor_workload(mentor) for mentor in mentors]
+
+
+def _build_mentor_workload(mentor: Mentor) -> MentorWorkload:
+    """Build a ``MentorWorkload`` entry for a single mentor."""
+    mentees = [
+        MenteeSummary(
+            id=student.id,
+            usn=student.usn,
+            full_name=student.user.full_name if student.user else "",
+            risk_status=student.risk_status,
         )
-    return workloads
+        for student in mentor.students
+    ]
+    mentor_name = mentor.user.full_name if mentor.user else ""
+
+    return MentorWorkload(
+        mentor_id=mentor.id,
+        mentor_name=mentor_name,
+        department=mentor.department,
+        current=len(mentees),
+        max=mentor.max_mentees,
+        mentees=mentees,
+    )

@@ -10,7 +10,7 @@ from backend.app.core.database import Base
 
 
 def _utc_now() -> datetime:
-    """Return the current UTC timestamp with timezone info."""
+    """Return the current UTC timestamp for allocation audit records."""
     return datetime.now(timezone.utc)
 
 

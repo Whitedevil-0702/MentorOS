@@ -12,7 +12,11 @@ class DepartmentRunStats(BaseModel):
 
 
 class AllocationRunResponse(BaseModel):
-    """Response returned after running the auto-allocation engine."""
+    """Response returned after running the auto-allocation engine.
+
+    Contains the total number of students allocated and skipped,
+    a list of skipped student ids, and per-department breakdowns.
+    """
 
     allocated: int
     skipped: int
@@ -57,7 +61,7 @@ class MenteeSummary(BaseModel):
 
 
 class MentorWorkload(BaseModel):
-    """Current mentor load versus capacity."""
+    """Current mentor load versus capacity, including assigned mentees."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,7 +74,7 @@ class MentorWorkload(BaseModel):
 
 
 class PendingStudent(BaseModel):
-    """Student awaiting mentor assignment."""
+    """Student awaiting mentor assignment, ordered by priority."""
 
     model_config = ConfigDict(from_attributes=True)
 
